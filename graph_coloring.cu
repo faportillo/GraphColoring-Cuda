@@ -8,10 +8,100 @@
 #include <cstring>
 #include <math.h>
 #include <thrust/count.h>
+#include <thrust/logical.h>
+#include <thrust/functional.h>
 
 #define MAXBLOCKS 1<<30
 
 using namespace std;
+
+//fixthis probably
+__device__
+int min_color(int v,int n,int* colorMask){
+	int i = 1;
+	while((colorMask[i] != v) && (i < n)){
+		i++;
+	}
+
+	return i;
+}
+
+__global__
+void colorTopoKernel(int n, int* NNZ, int* preSum, int* colIndex, int* colors, bool* changed, bool* colored){
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+	int stride = blockDim.x*gridDim.x;
+    int c;
+    int colorMask[256];
+    for (int i = 0; i < 256; i++){
+    	colorMask[i] = 512;
+    }
+
+	for(int i = index; i < n; i+= stride){
+
+        if (!colored[i]){
+        	for (int k = preSum[i]; k < preSum[i + 1]; k++){
+			    int j = colIndex[k];
+			    colorMask[colors[j]] = i;
+			}
+			c = min_color(i, n, colorMask);
+            colors[i] = c;
+            colored[i] = true;
+            changed[i] = true;
+        }
+	}
+}
+
+__global__
+void checkCollisions(int n, int* NNZ, int* preSum, int* colIndex, int* colors, bool* colored){
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+	int stride = blockDim.x*gridDim.x;
+
+	for(int i = index; i < n; i+=stride){
+		for (int k = preSum[i]; k < preSum[i + 1]; k++){
+		    int j = colIndex[k];
+		    if ((colors[i] == colors[j]) && ( i < j)){
+		    	colored[i] = false;
+		    }
+		}
+	}
+}
+
+//topology driven parallel graph coloring algorithm
+void colorTopo(int n, int* NNZ, int* preSum, int* colIndex, int* colors){
+	bool* changed;
+    bool* colored;
+    //int* colorMask;
+    
+    //cudaMallocManaged(&colorMask, sizeof(int)*n);
+    cudaMallocManaged(&colored, sizeof(bool)*n);
+    cudaMallocManaged(&changed, sizeof(bool)*n);
+	//thrust::fill(colorMask, colorMask+n, 512);
+    thrust::fill(colored, colored+n, false);
+    thrust::fill(colors, colors+n,0);
+
+    do{
+    	thrust::fill(changed, changed+n, false);
+    	int nt = 256;
+    	int nb = min((n + nt -1)/nt, MAXBLOCKS);
+    	colorTopoKernel<<<nb,nt>>>(n, NNZ, preSum, colIndex, colors, changed, colored);
+    	cudaDeviceSynchronize();
+    	checkCollisions<<<nb,nt>>>(n, NNZ,preSum, colIndex,  colors,colored);
+    	cudaDeviceSynchronize();
+
+
+        for(int i = 0; i < n; i++){
+    	    printf("%d ", colors[i]);
+    	}
+        printf("\n");
+
+    }while(thrust::any_of(changed,changed+n,thrust::identity<bool>()));
+    
+
+    //cudaFree(colorMask);
+    cudaFree(colored);
+    cudaFree(changed);
+}
 
 //jones plassmann luby algorithm for graphcoloring
 __global__ 
@@ -19,7 +109,7 @@ void colorJPLKernel(int n, int c, int* NNZ, int* preSum, int* colIndex,int* rand
 
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x*gridDim.x;
-
+    
     if (index < n){
     	for (int i = index; i < n; i += stride){
 		bool f = true;
@@ -30,7 +120,7 @@ void colorJPLKernel(int n, int c, int* NNZ, int* preSum, int* colIndex,int* rand
 		}
 
 		int ir = randoms[i];
-
+        //instead of looping through 
 		for (int k = preSum[i]; k < preSum[i + 1]; k++){
 			int j = colIndex[k];
 			int jc = colors[j];
@@ -81,8 +171,7 @@ void colorJPL(int n, int* NNZ, int* preSum, int* colIndex, int* colors){
 }
 
 // Counts the number of unique colors in a solution
-int CountColors(int V, int* color)
-{
+int CountColors(int V, int* color){
    int num_colors = 0;
    set<int> seen_colors;
 
@@ -97,8 +186,7 @@ int CountColors(int V, int* color)
 }
 
 // Returns true if the color assignment is valid for the graph
-bool IsValidColoring(bool* graph, int V, int* color) 
-{
+bool IsValidColoring(bool* graph, int V, int* color) {
    for (int i = 0; i < V; i++) {
       for (int j = 0; j < V; j++) {
          if (graph[i * V + j]) {
@@ -119,8 +207,7 @@ bool IsValidColoring(bool* graph, int V, int* color)
 
 // Read DIMACS graphs
 // Assumes input nodes are numbered starting from 1
-void ReadColFile(const char filename[], bool** graph, int* V) 
-{
+void ReadColFile(const char filename[], bool** graph, int* V) {
    string line;
    ifstream infile(filename);
    if (infile.fail()) {
@@ -157,8 +244,7 @@ void ReadColFile(const char filename[], bool** graph, int* V)
 
 // Read MatrixMarket graphs
 // Assumes input nodes are numbered starting from 1
-void ReadMMFile(const char filename[], bool** graph, int* V) 
-{
+void ReadMMFile(const char filename[], bool** graph, int* V) {
    string line;
    ifstream infile(filename);
    if (infile.fail()) {
@@ -272,10 +358,16 @@ void GraphColoringGPU(const char filename[], int** color){
     //printf("offset values : ");
     for (int i = 0; i < V + 1; i++){
     	Ao[i] = preSum[i];
+
     }
     
-    colorJPL(V, Av, Ao, Ac,colors);
-    printf("JPL coloring found solution with %d colors\n", CountColors(V, colors));
+    // colorJPL(V, Av, Ao, Ac,colors);
+    // printf("JPL coloring found solution with %d colors\n", CountColors(V, colors));
+    // printf("Valid coloring: %d\n", IsValidColoring(graph, V, colors));
+
+    colorTopo(V,Av,Ao,Ac,colors);
+
+    printf("Topo coloring found solution with %d colors\n", CountColors(V, colors));
     printf("Valid coloring: %d\n", IsValidColoring(graph, V, colors));
     
     free(NNZ);
