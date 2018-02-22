@@ -15,11 +15,11 @@
 
 using namespace std;
 
-//fixthis probably
+//find min color
 __device__
 int min_color(int v,int n,int* colorMask){
 	int i = 1;
-	while((colorMask[i] != v) && (i < n)){
+	while((colorMask[i] == v) && (i < n)){
 		i++;
 	}
 
@@ -52,6 +52,7 @@ void colorTopoKernel(int n, int* NNZ, int* preSum, int* colIndex, int* colors, b
 	}
 }
 
+//check for collisions due to coloring adjacent nodes same color
 __global__
 void checkCollisions(int n, int* NNZ, int* preSum, int* colIndex, int* colors, bool* colored){
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -71,12 +72,10 @@ void checkCollisions(int n, int* NNZ, int* preSum, int* colIndex, int* colors, b
 void colorTopo(int n, int* NNZ, int* preSum, int* colIndex, int* colors){
 	bool* changed;
     bool* colored;
-    //int* colorMask;
-    
-    //cudaMallocManaged(&colorMask, sizeof(int)*n);
+
     cudaMallocManaged(&colored, sizeof(bool)*n);
     cudaMallocManaged(&changed, sizeof(bool)*n);
-	//thrust::fill(colorMask, colorMask+n, 512);
+
     thrust::fill(colored, colored+n, false);
     thrust::fill(colors, colors+n,0);
 
@@ -88,17 +87,8 @@ void colorTopo(int n, int* NNZ, int* preSum, int* colIndex, int* colors){
     	cudaDeviceSynchronize();
     	checkCollisions<<<nb,nt>>>(n, NNZ,preSum, colIndex,  colors,colored);
     	cudaDeviceSynchronize();
-
-
-        for(int i = 0; i < n; i++){
-    	    printf("%d ", colors[i]);
-    	}
-        printf("\n");
-
     }while(thrust::any_of(changed,changed+n,thrust::identity<bool>()));
     
-
-    //cudaFree(colorMask);
     cudaFree(colored);
     cudaFree(changed);
 }
@@ -162,11 +152,6 @@ void colorJPL(int n, int* NNZ, int* preSum, int* colIndex, int* colors){
     	}
     }
 
-    printf("\n");
-    for(int i = 0; i < n; i++){
-    	printf("%d ", colors[i]);
-    }
-    printf("\n");
     cudaFree(randoms);
 }
 
@@ -321,6 +306,7 @@ void CSRConvert(bool** graph, int rows, int** NNZ, int* preSum, int** colIndex, 
     }
 }
 
+//Assignment API
 void GraphColoringGPU(const char filename[], int** color){
     bool* graph;
     int V;
@@ -377,13 +363,4 @@ void GraphColoringGPU(const char filename[], int** color){
     cudaFree(Av);
     cudaFree(Ac);
 
-}
-
-int main(int argc, char* argv[]){
-    const char fileName[] = "/home/zwharris/EEC289Q/Hw3/planar16.col";
-    int* color;
-    GraphColoringGPU(fileName, &color);
-	
-
-	return 0;
 }
